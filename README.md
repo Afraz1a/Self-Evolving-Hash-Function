@@ -63,6 +63,8 @@ python blockchain.py
 ```
 blockchain.py   — main file with all code and tests
 README.md       — this file
+project_architecture.pdf — contains all the project layout and architectural breakdown
+
 ```
 
 ## 
