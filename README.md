@@ -246,12 +246,4 @@ The frontend uses no build step — vanilla JS + CSS variables, JetBrains Mono f
 
 ---
 
-## Project meta
 
-**Team:** Afrazia · Ashna · Khadija
-**Mentors:** Dr. Umer Janjua · Shahzaib Cheema
-**Phase:** 2 (Revised Submission)
-**Stack:** Python 3.10+ · Flask 2.0+ · hashlib (stdlib) · vanilla JS frontend
-**Status:** Working prototype + full test suite + benchmark suite
-
-See `SEHF_Architecture.pdf` for the full project architecture document — layer breakdowns, data flow traces, security arguments, threat model, and benchmark methodology.
