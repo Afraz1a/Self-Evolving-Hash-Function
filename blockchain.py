@@ -1,114 +1,288 @@
+
+
 import hashlib
 import json
 import time
-import sys
 
-def evolving_hash(data, block_no, prev_hash):
-    text = data + str(block_no) + prev_hash
-    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def evolving_hash(data: str, block_no: int, prev_hash: str) -> str:
+    """
+    Self-Evolving Hash Function.
+
+    SEHF(data, n, h_prev) = SHA-256( data + str(n) + h_prev )
+
+    Args:
+        data      : Serialized transaction content (JSON string)
+        block_no  : Index of the current block (n)
+        prev_hash : Hash of the previous block (h_{n-1})
+
+    Returns:
+        64-character hex digest (SHA-256 output)
+
+    Security Properties:
+        1. Context Uniqueness  : Same data → different hash in each block
+        2. Determinism         : Same (data, n, h_prev) → always same hash
+        3. Collision Resistance: Inherited from SHA-256 (2^128 security)
+    """
+    combined = data + str(block_no) + prev_hash
+    return hashlib.sha256(combined.encode('utf-8')).hexdigest()
 
 class Block:
-    def __init__(self, index, transactions, prev_hash):
-        self.index = index
-        self.timestamp = time.time()
+    """
+    Represents a single block in the SEHF blockchain.
+
+    Each block's hash is produced by evolving_hash(), which means
+    the same transaction data produces a DIFFERENT hash in each block.
+    """
+
+    def __init__(self, index: int, transactions: list, prev_hash: str):
+        """
+        Args:
+            index        : Block number (0 = genesis)
+            transactions : List of transaction strings
+            prev_hash    : Hash of the previous block
+        """
+        self.index        = index
+        self.timestamp    = time.time()
         self.transactions = transactions
-        self.prev_hash = prev_hash
-        self.hash = evolving_hash(json.dumps(transactions, sort_keys=True), index, prev_hash)
+        self.prev_hash    = prev_hash
+
+        serialized = json.dumps(self.transactions, sort_keys=True)
+
+        self.hash = evolving_hash(serialized, self.index, self.prev_hash)
+
+    def to_dict(self) -> dict:
+        """Return block as a dictionary (for JSON storage & Flask API)."""
+        return {
+            "index"        : self.index,
+            "timestamp"    : self.timestamp,
+            "transactions" : self.transactions,
+            "prev_hash"    : self.prev_hash,
+            "hash"         : self.hash,
+        }
+
+    def __repr__(self):
+        return (f"Block(index={self.index}, "
+                f"hash={self.hash[:12]}..., "
+                f"prev={self.prev_hash[:12]}...)")
+
+
 
 class Blockchain:
+    """
+    A blockchain where every block hash is context-bound using SEHF.
+
+    Key operations:
+        add_transaction()  → queue a transaction
+        make_block()       → seal pending transactions into a block
+        add_block()        → shortcut: make_block() directly from tx list
+        verify_chain()     → integrity check for the full chain
+        simulate_replay()  → test replay attack detection
+    """
+
+    GENESIS_PREV_HASH = "0" * 64   # Standard placeholder for genesis block
+
     def __init__(self):
-        genesis = Block(0, ['Genesis'], '0' * 64)
-        self.chain = [genesis]
+        self.pending_transactions: list = []
+        self.chain: list[Block] = []
+        self._create_genesis_block()
 
-    def add_block(self, transactions):
-        prev = self.chain[-1]
-        new_block = Block(len(self.chain), transactions, prev.hash)
+    def _create_genesis_block(self):
+        """Create Block 0 with a canonical prev_hash of 64 zeros."""
+        genesis = Block(
+            index=0,
+            transactions=["Genesis Block"],
+            prev_hash=self.GENESIS_PREV_HASH
+        )
+        self.chain.append(genesis)
+
+
+    def add_transaction(self, transaction: str) -> int:
+        """
+        Add a transaction to the pending pool.
+
+        Args:
+            transaction: Any string representing the transaction data.
+
+        Returns:
+            Index of the block that will include this transaction.
+        """
+        self.pending_transactions.append(transaction)
+        return len(self.chain)  # will go into this block index
+
+
+    def make_block(self) -> Block:
+        """
+        Seal all pending transactions into a new block.
+
+        Returns:
+            The newly created Block object.
+
+        Raises:
+            ValueError: If there are no pending transactions.
+        """
+        if not self.pending_transactions:
+            raise ValueError("No pending transactions to seal into a block.")
+
+        prev_block = self.chain[-1]
+        new_block = Block(
+            index=len(self.chain),
+            transactions=self.pending_transactions.copy(),
+            prev_hash=prev_block.hash
+        )
         self.chain.append(new_block)
+        self.pending_transactions = []   # clear the pool
+        return new_block
 
-    def verify_chain(self):
+    def add_block(self, transactions: list) -> Block:
+        """
+        Shortcut: add transactions and immediately seal them into a block.
+
+        Args:
+            transactions: List of transaction strings.
+
+        Returns:
+            The newly created Block object.
+        """
+        prev_block = self.chain[-1]
+        new_block = Block(
+            index=len(self.chain),
+            transactions=transactions,
+            prev_hash=prev_block.hash
+        )
+        self.chain.append(new_block)
+        return new_block
+
+
+    def verify_chain(self) -> bool:
+        """
+        Recompute every block's hash and verify chain linkage.
+
+        Returns:
+            True if the chain is unmodified, False if tampered.
+        """
         for i in range(1, len(self.chain)):
-            b = self.chain[i]
-            recomputed = evolving_hash(json.dumps(b.transactions, sort_keys=True), b.index, b.prev_hash)
-            if recomputed != b.hash:
+            block = self.chain[i]
+            prev_block = self.chain[i - 1]
+
+            # 1. Recompute hash for this block
+            serialized = json.dumps(block.transactions, sort_keys=True)
+            recomputed = evolving_hash(serialized, block.index, block.prev_hash)
+
+            # 2. Check this block's stored hash
+            if recomputed != block.hash:
+                print(f"  [TAMPER DETECTED] Block {block.index}: hash mismatch")
                 return False
+
+            # 3. Check linkage to previous block
+            if block.prev_hash != prev_block.hash:
+                print(f"  [TAMPER DETECTED] Block {block.index}: broken chain link")
+                return False
+
         return True
 
 
-# ── TESTS ──────────────────────────────────────────────
+    def simulate_replay(self, transaction: str,
+                        source_block_idx: int,
+                        target_block_idx: int) -> dict:
+        """
+        Simulate a replay attack: take a valid tx from one block and
+        try to replay it in a different block context.
 
-bc = Blockchain()
-bc.add_block(["Send 100 coins"])
-bc.add_block(["Send 100 coins"])
-bc.add_block(["Send 50 coins"])
+        Args:
+            transaction      : The transaction data being replayed
+            source_block_idx : Block where the original tx lived
+            target_block_idx : Block where the attacker tries to replay it
 
-print("=" * 60)
-print("ALL BLOCK HASHES")
-print("=" * 60)
-for block in bc.chain:
-    print(f"Block {block.index} | Hash: {block.hash[:20]}...")
+        Returns:
+            dict with original_hash, replayed_hash, and attack_detected flag
+        """
+        if source_block_idx >= len(self.chain):
+            raise IndexError(f"Source block {source_block_idx} does not exist.")
+        if target_block_idx >= len(self.chain):
+            raise IndexError(f"Target block {target_block_idx} does not exist.")
 
-print()
-print("=" * 60)
-print("TEST 1: Cross-block uniqueness (same tx, different blocks)")
-print("=" * 60)
-h_block1 = bc.chain[1].hash
-h_block2 = bc.chain[2].hash
-print(f"Block 1 hash: {h_block1[:20]}...")
-print(f"Block 2 hash: {h_block2[:20]}...")
-print(f"Hashes are different: {h_block1 != h_block2}")
+        source = self.chain[source_block_idx]
+        target = self.chain[target_block_idx]
 
-print()
-print("=" * 60)
-print("TEST 2: Determinism (same inputs = same hash)")
-print("=" * 60)
-h1 = evolving_hash("Send 100 coins", 1, bc.chain[0].hash)
-h2 = evolving_hash("Send 100 coins", 1, bc.chain[0].hash)
-print(f"Hash attempt 1: {h1[:20]}...")
-print(f"Hash attempt 2: {h2[:20]}...")
-print(f"Both hashes are equal: {h1 == h2}")
+        serialized = json.dumps([transaction], sort_keys=True)
 
-print()
-print("=" * 60)
-print("TEST 3: Chain verification (untampered)")
-print("=" * 60)
-print(f"Chain valid: {bc.verify_chain()}")
+        original_hash = evolving_hash(serialized, source.index, source.prev_hash)
+        replayed_hash = evolving_hash(serialized, target.index, target.prev_hash)
 
-print()
-print("=" * 60)
-print("TEST 4: Tamper detection")
-print("=" * 60)
-bc.chain[1].transactions = ["Send 999 coins"]
-print(f"Chain valid after tampering: {bc.verify_chain()}")
+        return {
+            "transaction"    : transaction,
+            "source_block"   : source_block_idx,
+            "target_block"   : target_block_idx,
+            "original_hash"  : original_hash,
+            "replayed_hash"  : replayed_hash,
+            "attack_detected": original_hash != replayed_hash,
+        }
 
-print()
-print("=" * 60)
-print("TEST 5: Performance Metrics")
-print("=" * 60)
 
-# Hash generation speed
-start = time.time()
-for i in range(1000):
-    evolving_hash("Send 100 coins", i, "0" * 64)
-end = time.time()
-avg_ms = ((end - start) / 1000) * 1000
-print(f"Hash generation (avg over 1000 runs): {avg_ms:.4f} ms per hash")
+    def verify_chain_detail(self) -> dict:
+        """
+        Like verify_chain(), but returns a structured dict instead of a bool.
+        Used by the Flask dashboard's /api/verify endpoint.
 
-# Chain verification speed
-bc2 = Blockchain()
-for i in range(10):
-    bc2.add_block([f"Transaction {i}"])
+        Returns:
+            {
+                "valid"   : bool,
+                "length"  : int,
+                "message" : str,          # human-readable verdict
+                "errors"  : list[str],    # empty if valid
+            }
+        """
+        errors = []
 
-start = time.time()
-bc2.verify_chain()
-end = time.time()
-verify_ms = (end - start) * 1000
-print(f"Chain verification (10 blocks): {verify_ms:.4f} ms")
+        for i in range(1, len(self.chain)):
+            block      = self.chain[i]
+            prev_block = self.chain[i - 1]
 
-# Memory usage
-chain_size = sum(sys.getsizeof(b.__dict__) for b in bc2.chain)
-print(f"Memory usage (10 block chain): {chain_size / 1024:.2f} KB")
+            # Recompute hash
+            serialized = json.dumps(block.transactions, sort_keys=True)
+            recomputed = evolving_hash(serialized, block.index, block.prev_hash)
 
-# Uniqueness check across 5 blocks
-hashes = [evolving_hash("Send 100 coins", i, "0" * 64) for i in range(5)]
-all_unique = len(hashes) == len(set(hashes))
-print(f"Uniqueness across 5 blocks: {all_unique}")
+            if recomputed != block.hash:
+                errors.append(
+                    f"Block {block.index}: stored hash does not match recomputed SEHF hash."
+                )
+
+            if block.prev_hash != prev_block.hash:
+                errors.append(
+                    f"Block {block.index}: prev_hash does not match Block {prev_block.index}'s hash (chain link broken)."
+                )
+
+        valid = len(errors) == 0
+        return {
+            "valid"  : valid,
+            "length" : len(self.chain),
+            "message": (
+                f"All {len(self.chain)} blocks verified — chain is intact."
+                if valid
+                else f"{len(errors)} integrity error(s) found."
+            ),
+            "errors" : errors,
+        }
+
+
+    def print_chain(self):
+        """Pretty-print all blocks."""
+        print("\n" + "=" * 60)
+        print("  BLOCKCHAIN — ALL BLOCKS")
+        print("=" * 60)
+        for block in self.chain:
+            print(f"  Block {block.index:>3} | Hash: {block.hash[:20]}... | "
+                  f"Txs: {len(block.transactions)}")
+        print("=" * 60)
+
+    def to_dict(self) -> list:
+        """Return entire chain as a list of dicts."""
+        return [b.to_dict() for b in self.chain]
+
+    def __len__(self):
+        return len(self.chain)
+
+    def __getitem__(self, idx):
+        return self.chain[idx]
